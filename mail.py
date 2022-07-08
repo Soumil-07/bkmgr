@@ -26,7 +26,6 @@ def send_mail(fname, smtp_server, port, from_addr, from_password, to_addr, conve
     msg.attach(part)
 
     with smtplib.SMTP(smtp_server, port) as server:
-        server.ehlo()
         server.starttls(context=context)
         server.ehlo()
         server.login(from_addr, from_password)

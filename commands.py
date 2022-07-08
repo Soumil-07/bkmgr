@@ -7,7 +7,7 @@ from halo import Halo
 
 from config import get_config
 from mail import send_mail
-from metadata import get_metadata
+from metadata import _edit_metadata, get_metadata
 from utils import sizeof_fmt, transform_author
 
 TABLES = """
@@ -23,21 +23,23 @@ CREATE TABLE IF NOT EXISTS books (
     path       TEXT NOT NULL PRIMARY KEY,
     isUploaded BOOLEAN NOT NULL CHECK (isUploaded IN (0, 1)),
     metadata   INTEGER,
-    FOREIGN KEY(metadata) REFERENCES metadata(id)
+    FOREIGN KEY(metadata) REFERENCES metadata(id),
+    isRead     BOOLEAN NOT NULL
 );
 """
 
 green = colored.fg('green') + colored.attr('bold')
 blue = colored.fg('blue') + colored.attr('bold')
+orange = colored.fg('orange_1') + colored.attr('bold')
 
 VALID_EXTENSIONS = ['.pdf', '.mobi', '.docx', '.doc']
 
 def fetch_metadata(fpath):
     with conn:
-        result = conn.execute('SELECT metadata, isUploaded FROM books WHERE path = :path', {
+        result = conn.execute('SELECT metadata, isUploaded, isRead FROM books WHERE path = :path', {
             'path': fpath
         })
-        mid, is_uploaded = result.fetchone()
+        mid, is_uploaded, is_read = result.fetchone()
         result = conn.execute('SELECT * FROM metadata WHERE id = :mid', {
             'mid': mid
         })
@@ -48,15 +50,31 @@ def fetch_metadata(fpath):
             'author': author,
             'language': language,
             'created_at': parse(created_at),
-            'isUploaded': is_uploaded
+            'isUploaded': is_uploaded,
+            'isRead': is_read
         }
     return None
 
 def sync_book(fpath):
     metadata = get_metadata(fpath)
     if metadata is None:
-        # TODO: Prompt for metadata
-        return
+        print(colored.stylize('Could not find metadata, please enter it manually.\n', blue))
+        title = input("Enter the title of the book: ")
+        author = input("Enter the full name of the author: ")
+        lang = input("Enter the two digit language code: ")
+        if len(lang) != 2:
+            print('Invalid language code provided.')
+            exit(1)
+        lang = lang.lower()
+        date = input("Enter the date of publication: ")
+        date = parse(date)
+
+        metadata = {
+            'title': title,
+            'author': author,
+            'language': lang,
+            'created_at': date
+        }
     with conn:
         result = conn.execute('SELECT EXISTS(SELECT 1 FROM books WHERE path=:path)', {
             'path': fpath
@@ -102,15 +120,29 @@ def books_dir():
 
 conn = sqlite3.connect(str(config_dir() / 'books.db'))
 
-def list_():
+def edit_metadata(book):
+    book = book.lower()
+    for book_path in books_dir().iterdir():
+        if book in book_path.name.lower():
+            _edit_metadata(book_path)
+
+def list_(author=None, title=None, unread=True):
     book_path = books_dir()
     usage = sum(file.stat().st_size for file in book_path.rglob('*'))
     print(colored.stylize('Listing all books in the local database...'.ljust(60)
      +  ' {}\n'.format(sizeof_fmt(usage)), green))
     for book_path in book_path.iterdir():
         metadata = fetch_metadata(str(book_path.absolute()))
+        # filter books according to CLI flags
+        if author is not None and author not in str(metadata['author']):
+            continue
+        if title is not None and title.lower() not in str(metadata['title']).lower():
+            continue
+        if unread and metadata['isRead']:
+            continue
+
         uploaded = ' ⬆️' if metadata['isUploaded'] else '  '
-        print('{:60} {}'.format((metadata['title'] + uploaded), colored.stylize(metadata['author'], blue)))
+        print('{:60} {:50} {}'.format((metadata['title'] + uploaded), colored.stylize(metadata['author'], blue), colored.stylize(metadata['language'], orange)))
 
 def sync_():
     # run table creation script
@@ -122,15 +154,15 @@ def sync_():
         sync_book(str(book_path.absolute()))
 
 def add(file_path):
-    book_path = Path(file_path)
-    if not book_path.exists():
+    file_path = Path(file_path)
+    if not file_path.exists():
         print("Invalid path provided.")
         return
-    book_path = books_dir() / book_path.name
+    book_path = books_dir() / file_path.name
     if book_path.exists():
         print("The book \"{}\" is already in your local library.".format(book_path.name))
         return
-    book_path.write_bytes(book_path.read_bytes())
+    book_path.write_bytes(file_path.read_bytes())
     sync_book(str(book_path.absolute()))
 
 def upload(book, dry_run=False):

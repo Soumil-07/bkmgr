@@ -1,8 +1,10 @@
+from datetime import datetime
 import zipfile
 from os import path
 
 from dateutil.parser import parse
 from lxml import etree
+from ebooklib import epub
 
 
 # Fetches basic metadata (Title, Author, Publication Date) from the e-book format. Returns None if not found
@@ -36,11 +38,24 @@ def get_metadata_epub(fname):
     # repackage the data
     res = {}
     for s in ['title','language','creator','date','identifier']:
-        res[s] = p.xpath('dc:%s/text()'%(s),namespaces=ns)[0]
+        result = p.xpath('dc:%s/text()'%(s),namespaces=ns)
+        if result is not None and len(result) > 0:
+            res[s] = result[0]
 
     return {
         'title': res['title'],
         'language': res['language'].lower(),
-        'created_at': parse(res['date']),
+        'created_at': parse(res['date']) if 'date' in res else datetime.now(),
         'author': res['creator']
     }
+
+def _edit_metadata(fpath):
+    ext = fpath.suffix
+    if ext == '.epub':
+        book = epub.read_epub(fpath.absolute())
+        print(f'Title: {book.title}')
+        newtitle = input('Enter new title (blank for no change): ')
+        if newtitle != '':
+            book.set_title(newtitle)
+
+        epub.write_epub(fpath.absolute(), book)
