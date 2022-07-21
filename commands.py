@@ -4,27 +4,32 @@ from pathlib import Path
 import colored
 from dateutil.parser import parse
 from halo import Halo
+from tqdm import tqdm
 
 from config import get_config
 from mail import send_mail
 from metadata import _edit_metadata, get_metadata
-from utils import sizeof_fmt, transform_author
+from utils import sizeof_fmt, transform_author, truncate_string
 
 TABLES = """
 CREATE TABLE IF NOT EXISTS metadata (
-    id         INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
-    title      TEXT NOT NULL,
-    author     TEXT NOT NULL,
-    language   TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    id             INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    title          TEXT NOT NULL,
+    description    TEXT NOT NULL,
+    authors        TEXT NOT NULL,
+    language       TEXT NOT NULL,
+    published_at   TEXT NOT NULL,
+    average_rating INTEGER NOT NULL,
+    page_count     INTEGER NOT NULL,
+    categories     TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS books (
     path       TEXT NOT NULL PRIMARY KEY,
     isUploaded BOOLEAN NOT NULL CHECK (isUploaded IN (0, 1)),
     metadata   INTEGER,
-    FOREIGN KEY(metadata) REFERENCES metadata(id),
-    isRead     BOOLEAN NOT NULL
+    isRead     BOOLEAN NOT NULL,
+    FOREIGN KEY(metadata) REFERENCES metadata(id)
 );
 """
 
@@ -40,10 +45,10 @@ def fetch_metadata(fpath):
             'path': fpath
         })
         mid, is_uploaded, is_read = result.fetchone()
-        result = conn.execute('SELECT * FROM metadata WHERE id = :mid', {
+        result = conn.execute('SELECT title, authors, language, published_at, categories FROM metadata WHERE id = :mid', {
             'mid': mid
         })
-        _, title, author, language, created_at = result.fetchone()
+        title, author, language, created_at, categories = result.fetchone()
 
         return {
             'title': title,
@@ -51,7 +56,8 @@ def fetch_metadata(fpath):
             'language': language,
             'created_at': parse(created_at),
             'isUploaded': is_uploaded,
-            'isRead': is_read
+            'isRead': is_read,
+            'categories': categories.split(', ')
         }
     return None
 
@@ -80,23 +86,29 @@ def sync_book(fpath):
             'path': fpath
         })
         exists, = result.fetchone()
+        print(exists)
         if exists == 1:
             return
 
-        result = conn.execute('INSERT INTO metadata (title, author, language, created_at) \
-            VALUES (:title, :author, :lang, :created_at) RETURNING id;', {
+        result = conn.execute('INSERT INTO metadata (title, description, authors, language, published_at, average_rating, page_count, categories) \
+            VALUES (:title, :description, :authors, :language, :published_at, :average_rating, :page_count, :categories) RETURNING id;', {
                 'title': metadata['title'],
-                'author': transform_author(str(metadata['author'])),
-                'lang': metadata['language'],
-                'created_at': metadata['created_at'].isoformat()
+                'description': metadata['description'],
+                'language': metadata['language'],
+                'authors': ", ".join(metadata['authors']),
+                'published_at': metadata['published_at'].isoformat(),
+                'average_rating': metadata['average_rating'],
+                'page_count': metadata['page_count'],
+                'categories': ", ".join(metadata['categories'])
             })
         mid, = result.fetchone()
 
-        conn.execute('INSERT INTO books (path, isUploaded, metadata) VALUES \
-            (:fpath, :isUploaded, :mid);', {
+        conn.execute('INSERT INTO books (path, isUploaded, metadata, isRead) VALUES \
+            (:fpath, :isUploaded, :mid, :isRead);', {
                 'fpath': fpath,
                 'isUploaded': False,
-                'mid': mid
+                'mid': mid,
+                'isRead': False
             })
 
 def set_uploaded(fpath):
@@ -141,8 +153,8 @@ def list_(author=None, title=None, unread=True):
         if unread and metadata['isRead']:
             continue
 
-        uploaded = ' ⬆️' if metadata['isUploaded'] else '  '
-        print('{:60} {:50} {}'.format((metadata['title'] + uploaded), colored.stylize(metadata['author'], blue), colored.stylize(metadata['language'], orange)))
+        uploaded = '⬆️ ' if metadata['isUploaded'] else '❌ '
+        print('{} {:60} {:70} {}'.format(uploaded, truncate_string(metadata['title'], 60), colored.stylize(truncate_string(metadata['author'], 45), blue), ", ".join(metadata['categories'])))
 
 def sync_():
     # run table creation script
@@ -150,7 +162,7 @@ def sync_():
         conn.executescript(TABLES)
     # sync the database entries of all books in the /Books folder
     print(colored.stylize(f'Syncing {len(list(books_dir().iterdir()))} books in the local database...', green))
-    for book_path in books_dir().iterdir():
+    for book_path in tqdm(books_dir().iterdir()):
         sync_book(str(book_path.absolute()))
 
 def add(file_path):
@@ -186,11 +198,15 @@ def upload(book, dry_run=False):
 
             if not dry_run:
                 mdata = fetch_metadata(str(book_path.absolute()))
+
+                config = get_config()
+                if config is None:
+                    return
+
                 text = colored.stylize('Emailing "{}" by {} to your device.'.format(mdata['title'], mdata['author']), blue)
                 spinner = Halo(text=text, spinner='dots')
                 spinner.start()
 
-                config = get_config()
                 send_mail(
                     book_path.absolute(),
                     config['email']['smtp'],

@@ -1,7 +1,7 @@
 from datetime import datetime
 import zipfile
 from os import path
-
+import requests
 from dateutil.parser import parse
 from lxml import etree
 from ebooklib import epub
@@ -11,11 +11,25 @@ from ebooklib import epub
 def get_metadata(fname):
     ext = path.splitext(fname)[1]
     if ext == '.epub':
-        return get_metadata_epub(fname)
+        title = get_title(fname)
+        r = requests.get('https://www.googleapis.com/books/v1/volumes', params={'q': title})
+        data = r.json()
+        data = data['items'][0]['volumeInfo']
+        return {
+            'title': data['title'],
+            'authors': data['authors'],
+            'description': data['description'],
+            'published_at': parse(data['publishedDate']),
+            'page_count': data['pageCount'],
+            'categories': data['categories'],
+            'language': data['language'],
+            'average_rating': data.get('averageRating', 0),    
+        }
+
     return None
 
 # Sourced from https://stackoverflow.com/a/3114929/10974027
-def get_metadata_epub(fname):
+def get_title(fname):
     ns = {
         'n':'urn:oasis:names:tc:opendocument:xmlns:container',
         'pkg':'http://www.idpf.org/2007/opf',
@@ -37,17 +51,12 @@ def get_metadata_epub(fname):
 
     # repackage the data
     res = {}
-    for s in ['title','language','creator','date','identifier']:
+    for s in ['title']:
         result = p.xpath('dc:%s/text()'%(s),namespaces=ns)
         if result is not None and len(result) > 0:
             res[s] = result[0]
 
-    return {
-        'title': res['title'],
-        'language': res['language'].lower(),
-        'created_at': parse(res['date']) if 'date' in res else datetime.now(),
-        'author': res['creator']
-    }
+    return res['title']
 
 def _edit_metadata(fpath):
     ext = fpath.suffix

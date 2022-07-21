@@ -10,3 +10,8 @@ def transform_author(name: str):
     if ',' not in name:
         return name
     return ' '.join(reversed(name.split(', ')))
+
+def truncate_string(string, maxlen=80):
+    """Truncates a string to "maxlen", adding ellipsis if necessary"""
+    maxlen_ = maxlen - 3
+    return (string[:maxlen_] + '...') if len(string) > maxlen else string
